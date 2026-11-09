@@ -1,4 +1,4 @@
-# Goblin Siege
+# Siege of Bezzgod
 
 A browser tower defense game. Defend the gate from goblin waves with 21 defenders (Willy, Brad, Pulverizer and more) across 50 waves, with bosses Fisher, Bezzgod, Crawl, Grimtusk, Hexmother, Gloomwing and MSI Dan.
 
