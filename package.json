@@ -1,0 +1,8 @@
+{
+  "name": "siege-of-bezzgod",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Siege of Bezzgod - browser tower defense with online co-op",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
+}
