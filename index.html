@@ -110,6 +110,21 @@ canvas{width:100%;height:100%;display:block;touch-action:manipulation;cursor:cro
 .maps{display:flex;flex-wrap:wrap;gap:6px}
 .maps span{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:3px 10px;color:var(--muted)}
 .d{font-size:13px;color:var(--muted);line-height:1.45;margin:0}
+.lbhead{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.lbwrap{overflow-x:auto}
+.lb{width:100%;border-collapse:collapse;font-size:14px;font-variant-numeric:tabular-nums}
+.lb th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--line)}
+.lb td{padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+.lb td.p{white-space:normal;min-width:120px}
+.lb .n{text-align:right}
+.lb td.n{font-family:var(--display);color:var(--gold)}
+.lb tr.top1 td:first-child{color:var(--gold)}.lb tr.me td{background:#3a3216}
+.lb td.m,.lb td.dt{color:var(--muted);font-size:12px}
+@media (max-width:560px){.lb .dt{display:none}.lb td.m{white-space:normal}}
+.ovx{display:flex;flex-direction:column;gap:8px;align-items:center;width:min(340px,100%)}
+.ovx .joinrow{width:100%}
+.ovx .joinrow input{text-transform:none;letter-spacing:normal;font-family:var(--body)}
+.ovx .msg{margin:0;font-size:14px;color:var(--gold)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 
@@ -117,7 +132,7 @@ canvas{width:100%;height:100%;display:block;touch-action:manipulation;cursor:cro
   <section id="menu">
     <div class="hero">
       <h1>Siege of Bezzgod</h1>
-      <p>Hold the road against goblin waves with 26 defenders and 10 bosses. Every game rolls one of 5 maps at random.</p>
+      <p>Hold the road against goblin waves with 26 defenders and 10 bosses. Every game rolls one of 5 maps at random. Reach the highest wave in Endless to top the leaderboard.</p>
       <div class="maps" id="mapChips"></div>
     </div>
     <div class="mgrid">
@@ -135,6 +150,11 @@ canvas{width:100%;height:100%;display:block;touch-action:manipulation;cursor:cro
         <div class="joinrow"><input id="jcode" maxlength="4" placeholder="ABCD" autocomplete="off"><button id="btnJoin">Join</button></div>
         <p class="status" id="netStatus" role="status"></p>
       </div>
+    </div>
+    <div class="mbox" id="lbBox">
+      <div class="lbhead"><h2>Endless leaderboard</h2><button id="btnLbRefresh">Refresh</button></div>
+      <p class="d" id="lbNote">Loading scores…</p>
+      <div class="lbwrap"><table class="lb" id="lbTable" hidden><thead><tr><th>#</th><th>Player</th><th class="n">Wave</th><th>Map</th><th class="dt">Date</th></tr></thead><tbody id="lbBody"></tbody></table></div>
     </div>
   </section>
 
@@ -178,6 +198,7 @@ canvas{width:100%;height:100%;display:block;touch-action:manipulation;cursor:cro
       <div class="overlay" id="ov" hidden>
         <h2 id="ovT"></h2>
         <p id="ovP"></p>
+        <div class="ovx" id="ovX" hidden></div>
         <div class="ovbtns" id="ovB"></div>
       </div>
     </div>
@@ -699,6 +720,8 @@ function showOv(t,p,btns){$('ovT').textContent=t;$('ovP').textContent=p;const b=
 function hideOv(){$('ov').hidden=true;}
 function showEndOv(){
   const best=+(store.get('sob-best-'+S.mode.id)||0);
+  const ox=$('ovX');ox.hidden=true;ox.innerHTML='';
+  if(S.over&&S.mode.id==='endless'&&!isGuest())scoreForm(ox);
   if(S.over){const msg=`You reached wave ${S.wave} on ${MAP.name}.`+(best?` Best in ${S.mode.name}: wave ${best}.`:'');
     if(isGuest())showOv('The goblins broke through',msg+' Waiting for the host to start a new game.',[['Leave room',leaveRoom]]);
     else showOv('The goblins broke through',msg,[['Play again (new map)',playAgain],[NET.role==='host'?'Back to lobby':'Main menu',toMenu]]);}
@@ -706,9 +729,45 @@ function showEndOv(){
     if(isGuest())showOv('Victory!',msg+' Waiting for the host.',[['Leave room',leaveRoom]]);
     else{const b=[];if(!S.mode.rush)b.push(['Keep going (endless)',()=>{S.endless=true;hideOv();hud();}]);b.push(['Play again (new map)',playAgain],[NET.role==='host'?'Back to lobby':'Main menu',toMenu]);showOv('Victory!',msg,b);}}
 }
+/* ---------- leaderboard ---------- */
+const API=/^https?:$/.test(location.protocol)&&!/claude/.test(location.hostname);
+const myIds=()=>{try{return JSON.parse(store.get('sob-lb-ids')||'[]')}catch(e){return[]}};
+function drawBoard(entries,persistent){
+  const ids=myIds(),body=$('lbBody');
+  if(!entries.length){$('lbTable').hidden=true;$('lbNote').textContent='No scores yet. Play Endless and be the first on the board.';return;}
+  body.innerHTML=entries.map((e,i)=>`<tr class="${i===0?'top1':''}${ids.includes(e.id)?' me':''}"><td>${i+1}</td><td class="p">${esc(e.name)}</td><td class="n">${e.wave}</td><td class="m">${esc(e.map||'')}</td><td class="dt">${esc(e.date||'')}</td></tr>`).join('');
+  $('lbTable').hidden=false;
+  $('lbNote').textContent=persistent===false?'Heads up: scores reset whenever the server restarts until long-term storage is set up.':'Top Endless runs from everyone who plays on this site. Your runs are highlighted.';
+}
+async function loadBoard(){
+  if(!API){$('lbNote').textContent='The leaderboard lives on your Render website. Open the game there to see it.';$('lbTable').hidden=true;$('btnLbRefresh').hidden=true;return;}
+  $('lbNote').textContent='Loading scores…';
+  try{const r=await fetch('/api/leaderboard',{cache:'no-store'});const j=await r.json();drawBoard(j.entries||[],j.persistent);}
+  catch(e){$('lbNote').textContent='Could not load the leaderboard. The server might be waking up, so try Refresh in a few seconds.';}
+}
+$('btnLbRefresh').onclick=loadBoard;
+function scoreForm(ox){
+  if(!API||S.wave<1)return;
+  const online=S.players.length>1,team=S.players.map(p=>p.name);
+  ox.hidden=false;
+  ox.innerHTML=online?`<p class="msg">Team: ${esc(team.join(' + '))}</p><button class="go" id="btnSubmit">Submit team score</button>`
+    :`<label class="d" for="lbName">Name for the leaderboard</label><div class="joinrow"><input id="lbName" maxlength="14" placeholder="Your name"><button class="go" id="btnSubmit">Submit score</button></div>`;
+  if(!online)$('lbName').value=store.get('sob-name')||'';
+  const wave=S.wave,map=MAP.name;
+  $('btnSubmit').onclick=async()=>{
+    const name=online?team.join(' + '):(($('lbName').value||'').trim()||'Player');
+    if(!online)store.set('sob-name',name);
+    const btn=$('btnSubmit');btn.disabled=true;btn.textContent='Saving…';
+    try{const r=await fetch('/api/score',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,players:online?team:[name],wave,map})});
+      const j=await r.json();if(!r.ok)throw new Error(j.error||'Could not save');
+      const ids=myIds();ids.push(j.id);store.set('sob-lb-ids',JSON.stringify(ids.slice(-50)));
+      ox.innerHTML=`<p class="msg">Saved! You're #${j.rank} on the Endless leaderboard.</p>`;}
+    catch(e){btn.disabled=false;btn.textContent='Try again';const m=document.createElement('p');m.className='d';m.textContent=e.message==='Failed to fetch'?'Could not reach the server.':e.message;ox.appendChild(m);}
+  };
+}
 function playAgain(){if(NET.role==='host')hostStart(S.mode.id);else newGame(S.mode.id,randomMap(),S.players);}
 function toMenu(){if(NET.role==='host'){S=null;broadcast({k:'lobby',players:NET.players,mode:NET.mode,back:1});showScreen('lobby');renderLobby();}else if(isGuest()){leaveRoom();}else{S=null;showScreen('menu');}}
-function showScreen(name){for(const s of['menu','lobby','game'])$(s).hidden=s!==name;}
+function showScreen(name){for(const s of['menu','lobby','game'])$(s).hidden=s!==name;if(name==='menu'){loadBoard();modeButtons($('soloModes'),null,startSolo);}}
 
 $('btnWave').onclick=()=>act({a:'wave'});
 $('btnSpeed').onclick=()=>{S.speed=S.speed===1?2:S.speed===2?3:1;$('btnSpeed').textContent='Speed '+S.speed+'×';};
@@ -720,7 +779,8 @@ document.addEventListener('keydown',e=>{if(!S||$('game').hidden)return;if(e.key=
 $('mapChips').innerHTML=MAPS.map(m=>`<span>${m.name}</span>`).join('');
 function modeButtons(el,sel,onPick){el.innerHTML='';for(const m of MODES){const b=document.createElement('button');b.className='mode'+(sel===m.id?' on':'');b.id=el.id+'-'+m.id;
   const best=store.get('sob-best-'+m.id);b.innerHTML=`<b>${m.name}</b><span>${m.desc}${best?` Best: wave ${best}.`:''}</span>`;b.onclick=()=>onPick(m.id);el.appendChild(b);}}
-modeButtons($('soloModes'),null,id=>{NET.role='solo';NET.pid=1;newGame(id,randomMap(),[{pid:1,name:'You',col:PCOL[0]}]);});
+function startSolo(id){NET.role='solo';NET.pid=1;newGame(id,randomMap(),[{pid:1,name:'You',col:PCOL[0]}]);}
+modeButtons($('soloModes'),null,startSolo);
 $('pname').value=store.get('sob-name')||'';
 const status=t=>{$('netStatus').textContent=t;};
 
@@ -813,6 +873,7 @@ function frame(now){
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
+loadBoard();
 })();
 </script>
 

@@ -8,9 +8,80 @@ const crypto = require('crypto');
 const PORT = process.env.PORT || 3000;
 const PAGE = path.join(__dirname, 'index.html');
 
+/* ---------- Endless leaderboard ----------
+   Saved in Upstash Redis when UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are set (survives restarts).
+   Otherwise saved to a local file, which Render wipes on every restart or redeploy. */
+const LB_KEY = 'sob-leaderboard-endless';
+const LB_FILE = path.join(__dirname, 'leaderboard.json');
+const LB_MAX = 100;
+const UP_URL = (process.env.UPSTASH_REDIS_REST_URL || '').replace(/\/$/, '');
+const UP_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
+const lbPersistent = !!(UP_URL && UP_TOKEN);
+let lbCache = null;
+async function lbLoad() {
+  if (lbCache) return lbCache;
+  try {
+    if (lbPersistent) {
+      const r = await fetch(UP_URL + '/get/' + LB_KEY, { headers: { Authorization: 'Bearer ' + UP_TOKEN } });
+      const j = await r.json();
+      lbCache = j.result ? JSON.parse(j.result) : [];
+    } else {
+      lbCache = fs.existsSync(LB_FILE) ? JSON.parse(fs.readFileSync(LB_FILE, 'utf8')) : [];
+    }
+  } catch (e) { console.error('leaderboard load failed', e.message); lbCache = lbCache || []; }
+  if (!Array.isArray(lbCache)) lbCache = [];
+  return lbCache;
+}
+async function lbSave(list) {
+  lbCache = list;
+  try {
+    if (lbPersistent) await fetch(UP_URL + '/set/' + LB_KEY, { method: 'POST', headers: { Authorization: 'Bearer ' + UP_TOKEN }, body: JSON.stringify(list) });
+    else fs.writeFileSync(LB_FILE, JSON.stringify(list));
+  } catch (e) { console.error('leaderboard save failed', e.message); }
+}
+const lastPost = new Map();
+function readBody(req, limit) {
+  return new Promise((resolve, reject) => {
+    let size = 0; const chunks = [];
+    req.on('data', c => { size += c.length; if (size > limit) { reject(new Error('too big')); req.destroy(); } else chunks.push(c); });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+function json(res, code, obj) { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); }
+async function handleApi(req, res, url) {
+  if (url === '/api/leaderboard' && req.method === 'GET') {
+    const list = await lbLoad();
+    json(res, 200, { entries: list.slice(0, 25), persistent: lbPersistent });
+    return;
+  }
+  if (url === '/api/score' && req.method === 'POST') {
+    const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+    const now = Date.now();
+    if (now - (lastPost.get(ip) || 0) < 2500) { json(res, 429, { error: 'Slow down a little, then try again.' }); return; }
+    lastPost.set(ip, now);
+    let b; try { b = JSON.parse(await readBody(req, 4096)); } catch (e) { json(res, 400, { error: 'Bad request' }); return; }
+    const wave = Math.floor(Number(b.wave));
+    if (!(wave >= 1 && wave <= 2000)) { json(res, 400, { error: 'That wave number is not valid.' }); return; }
+    const name = cleanName(b.name).slice(0, 40);
+    const players = Array.isArray(b.players) ? b.players.slice(0, 4).map(cleanName) : [name];
+    const map = String(b.map || '').replace(/[^\w ]/g, '').slice(0, 30);
+    const entry = { name, players, wave, map, date: new Date().toISOString().slice(0, 10), id: crypto.randomBytes(4).toString('hex') };
+    const list = (await lbLoad()).slice();
+    list.push(entry);
+    list.sort((a, b) => b.wave - a.wave || a.date.localeCompare(b.date));
+    const rank = list.indexOf(entry) + 1;
+    await lbSave(list.slice(0, LB_MAX));
+    json(res, 200, { rank, id: entry.id, entries: list.slice(0, 25) });
+    return;
+  }
+  json(res, 404, { error: 'Not found' });
+}
+
 const server = http.createServer((req, res) => {
   const url = (req.url || '/').split('?')[0];
   if (url === '/health') { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('ok'); return; }
+  if (url.startsWith('/api/')) { handleApi(req, res, url).catch(() => json(res, 500, { error: 'Server error' })); return; }
   if (url === '/' || url === '/index.html') {
     fs.readFile(PAGE, (err, data) => {
       if (err) { res.writeHead(500); res.end('Game file missing'); return; }
