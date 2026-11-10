@@ -731,6 +731,8 @@ function showEndOv(){
 }
 /* ---------- leaderboard ---------- */
 const API=/^https?:$/.test(location.protocol)&&!/claude/.test(location.hostname);
+const NOT_SERVER='The leaderboard needs the game to run as a Render Web Service (Node). This site looks like a Static Site, so scores can\'t be saved here.';
+async function readJson(r){const t=await r.text();try{return JSON.parse(t)}catch(e){const err=new Error(NOT_SERVER);err.notServer=true;throw err;}}
 const myIds=()=>{try{return JSON.parse(store.get('sob-lb-ids')||'[]')}catch(e){return[]}};
 function drawBoard(entries,persistent){
   const ids=myIds(),body=$('lbBody');
@@ -742,8 +744,8 @@ function drawBoard(entries,persistent){
 async function loadBoard(){
   if(!API){$('lbNote').textContent='The leaderboard lives on your Render website. Open the game there to see it.';$('lbTable').hidden=true;$('btnLbRefresh').hidden=true;return;}
   $('lbNote').textContent='Loading scores…';
-  try{const r=await fetch('/api/leaderboard',{cache:'no-store'});const j=await r.json();drawBoard(j.entries||[],j.persistent);}
-  catch(e){$('lbNote').textContent='Could not load the leaderboard. The server might be waking up, so try Refresh in a few seconds.';}
+  try{const r=await fetch('/api/leaderboard',{cache:'no-store'});const j=await readJson(r);drawBoard(j.entries||[],j.persistent);}
+  catch(e){$('lbNote').textContent=e.notServer?NOT_SERVER:'Could not load the leaderboard. The server might be waking up, so try Refresh in a few seconds.';}
 }
 $('btnLbRefresh').onclick=loadBoard;
 function scoreForm(ox){
@@ -759,7 +761,7 @@ function scoreForm(ox){
     if(!online)store.set('sob-name',name);
     const btn=$('btnSubmit');btn.disabled=true;btn.textContent='Saving…';
     try{const r=await fetch('/api/score',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,players:online?team:[name],wave,map})});
-      const j=await r.json();if(!r.ok)throw new Error(j.error||'Could not save');
+      const j=await readJson(r);if(!r.ok)throw new Error(j.error||'Could not save');
       const ids=myIds();ids.push(j.id);store.set('sob-lb-ids',JSON.stringify(ids.slice(-50)));
       ox.innerHTML=`<p class="msg">Saved! You're #${j.rank} on the Endless leaderboard.</p>`;}
     catch(e){btn.disabled=false;btn.textContent='Try again';const m=document.createElement('p');m.className='d';m.textContent=e.message==='Failed to fetch'?'Could not reach the server.':e.message;ox.appendChild(m);}
